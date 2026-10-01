@@ -11,3 +11,4 @@ video/build
 next-env.d.ts
 tsconfig.tsbuildinfo
 SETUP_NEEDED.md
+data/*.log

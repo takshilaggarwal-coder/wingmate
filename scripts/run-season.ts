@@ -26,7 +26,7 @@ import {
 import { analyzePerson, readPerson, type PostImage } from "../lib/analyze";
 import { drain, runFullDate, runInvitation, runSpeedDate } from "../lib/dating";
 import { modelLabel, usage } from "../lib/llm";
-import { pairKey } from "../lib/ranking";
+import { forecast, pairKey } from "../lib/ranking";
 import type { Analysis, FullDate, Invitation, Person, RawSources, ReadingNote, SpeedDate } from "../lib/types";
 import { firstNameOf, hasInvitationBetween, pickInvites, pool, slugify, toAgent } from "../lib/util";
 
@@ -38,6 +38,9 @@ const arg = (k: string) => {
 const LIMIT = Number(arg("limit") || 0);
 const STAGE = arg("stage") || "all";
 const TARGET = Number(arg("target") || 25);
+// Free-tier friendly: each agent speed-dates its K most promising matches (by matchmaker forecast); 0 = everyone.
+const SPEED_K = Number(arg("speed-k") ?? 8);
+const INVITES = Number(arg("invites") ?? 2);
 
 const ROOT = process.cwd();
 const CACHE = path.join(ROOT, "data/cache");
@@ -159,8 +162,8 @@ async function main() {
   const list = LIMIT ? seeds.slice(0, LIMIT) : seeds;
   log(`season: ${list.length} candidates, target ${LIMIT || TARGET}, model ${modelLabel()}`);
 
-  // 1. scrape (3 people at a time; each person = 3 Apify runs)
-  const raws = await pool(list, 3, async (s) => ({ seed: s, raw: await scrape(s) }));
+  // 1. scrape one person at a time (each person = 3 Apify runs; free plans allow 5 concurrent runs)
+  const raws = await pool(list, 1, async (s) => ({ seed: s, raw: await scrape(s) }));
   const valid = raws.filter((r): r is { seed: SeedPerson; raw: RawSources } => !!r.raw).slice(0, LIMIT || TARGET);
   log(`scraped: ${valid.length} valid people`);
   if (STAGE === "scrape") return;
@@ -196,11 +199,26 @@ async function main() {
   log(`analyzed ${people.length} people`);
   if (STAGE === "analyze") return write(people, [], [], []);
 
-  // 4. speed dating — every pair
+  // 4. speed dating — the matchmaker seats every agent with its K most promising matches (or everyone)
   const pairs: [Person, Person][] = [];
-  for (let i = 0; i < people.length; i++) for (let j = i + 1; j < people.length; j++) pairs.push([people[i], people[j]]);
+  const seen = new Set<string>();
+  for (const p of people) {
+    const ranked = people
+      .filter((q) => q.id !== p.id)
+      .map((q) => ({ q, f: forecast(p.analysis, q.analysis).score }))
+      .sort((x, y) => y.f - x.f)
+      .slice(0, SPEED_K > 0 ? SPEED_K : undefined);
+    for (const { q } of ranked) {
+      const k = pairKey(p.id, q.id);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const [a, b] = people.indexOf(p) < people.indexOf(q) ? [p, q] : [q, p];
+      pairs.push([a, b]);
+    }
+  }
+  log(`speed dating: ${pairs.length} tables`);
   let done = 0;
-  const speedDates: SpeedDate[] = await pool(pairs, Number(process.env.SPEED_CONCURRENCY || 8), async ([a, b], i) => {
+  const speedDates: SpeedDate[] = await pool(pairs, Number(process.env.SPEED_CONCURRENCY || 6), async ([a, b], i) => {
     const file = path.join(CACHE, "speed", `${a.id}__${b.id}.json`);
     let sd = readJson<SpeedDate>(file);
     if (!sd) {
@@ -220,7 +238,7 @@ async function main() {
   });
   if (STAGE === "speed") return write(people, speedDates, [], []);
 
-  // 5. invitations — each agent asks out its top 3
+  // 5. invitations — each agent asks out its top picks
   const invitations: Invitation[] = [];
   const invite = async (from: Person, to: Person, sd?: SpeedDate) => {
     const file = path.join(CACHE, "inv", `${from.id}__${to.id}.json`);
@@ -236,7 +254,7 @@ async function main() {
   const sdFor = (a: string, b: string) => speedDates.find((s) => pairKey(s.a, s.b) === pairKey(a, b));
   const byId = new Map(people.map((p) => [p.id, p]));
   const wanted: [Person, Person][] = [];
-  for (const p of people) for (const q of pickInvites(p, people, speedDates, 3)) wanted.push([p, byId.get(q)!]);
+  for (const p of people) for (const q of pickInvites(p, people, speedDates, INVITES)) wanted.push([p, byId.get(q)!]);
   // mutual top picks become one invitation (from whoever's turn comes first)
   const queued: [Person, Person][] = [];
   for (const [p, q] of wanted) if (!queued.some(([x, y]) => pairKey(x.id, y.id) === pairKey(p.id, q.id))) queued.push([p, q]);
@@ -258,7 +276,7 @@ async function main() {
   const accepted = invitations.filter((i) => i.accepted);
   let dd = 0;
   const dates: FullDate[] = (
-    await pool(accepted, Number(process.env.DATE_CONCURRENCY || 5), async (inv) => {
+    await pool(accepted, Number(process.env.DATE_CONCURRENCY || 3), async (inv) => {
       const file = path.join(CACHE, "date", `${inv.from}__${inv.to}.json`);
       let fd = readJson<FullDate>(file);
       if (!fd) {

@@ -78,12 +78,21 @@ interface ApifyRun {
   statusMessage?: string;
 }
 
-export async function startRun(kind: RunKind, target: string): Promise<ApifyRun> {
-  const r = await apify<{ data: ApifyRun }>(`/acts/${ACTORS[kind]}/runs`, {
-    method: "POST",
-    body: JSON.stringify(actorInput(kind, target)),
-  });
-  return r.data;
+export async function startRun(kind: RunKind, target: string, maxWaitMs = 45_000): Promise<ApifyRun> {
+  const started = Date.now();
+  for (;;) {
+    try {
+      const r = await apify<{ data: ApifyRun }>(`/acts/${ACTORS[kind]}/runs`, {
+        method: "POST",
+        body: JSON.stringify(actorInput(kind, target)),
+      });
+      return r.data;
+    } catch (e) {
+      // Free Apify plans allow 5 concurrent runs; wait for a slot instead of failing.
+      if (!/concurrent Actor runs/i.test((e as Error).message) || Date.now() - started > maxWaitMs) throw e;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
 }
 
 export async function getRun(runId: string, waitSecs = 0): Promise<ApifyRun> {
@@ -99,7 +108,7 @@ export const TERMINAL = new Set(["SUCCEEDED", "FAILED", "TIMED-OUT", "ABORTED"])
 
 /** Run an actor to completion (used by the offline season script). */
 export async function runToCompletion(kind: RunKind, target: string): Promise<Record<string, unknown>[]> {
-  let run = await startRun(kind, target);
+  let run = await startRun(kind, target, 10 * 60_000);
   const started = Date.now();
   while (!TERMINAL.has(run.status)) {
     if (Date.now() - started > 8 * 60_000) throw new Error(`${kind} run timed out`);

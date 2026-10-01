@@ -49,7 +49,7 @@ export default function JoinPage() {
   const [instagram, setInstagram] = useState("");
   const [interestedIn, setInterestedIn] = useState<InterestedIn>("anyone");
   const [withSeason, setWithSeason] = useState(true);
-  const [tableCount, setTableCount] = useState(10);
+  const [tableCount, setTableCount] = useState(8);
   const [health, setHealth] = useState<{ apify: boolean; llm: boolean; model: string } | null>(null);
 
   const [stage, setStage] = useState<Stage>("form");
@@ -177,10 +177,10 @@ export default function JoinPage() {
         setTables([...tbl]);
       });
 
-      // 4. Invitations: my agent asks out its top 3; agents who loved meeting me ask me out too
+      // 4. Invitations: my agent asks out its top 2; up to 2 agents who loved meeting me ask me out too
       setStage("invites");
       const everyone = [me, ...poolPeople];
-      const mine = pickInvites(me, everyone, speedDates, 3);
+      const mine = pickInvites(me, everyone, speedDates, 2);
       const theirs = speedDates
         .map((s) => {
           const otherId = s.a === me.id ? s.b : s.a;
@@ -206,7 +206,7 @@ export default function JoinPage() {
 
       // 5. Real dates for every accepted invitation
       setStage("dates");
-      const accepted = invs.filter((i) => i.accepted).slice(0, 4);
+      const accepted = invs.filter((i) => i.accepted).slice(0, 3);
       const live: LiveDate[] = accepted.map((inv) => ({ inv, a: byId.get(inv.from)!, b: byId.get(inv.to)!, status: "waiting", lines: [] }));
       setDates([...live]);
       await pool(live, 2, async (d) => {
@@ -280,8 +280,8 @@ export default function JoinPage() {
                 <label className="flex items-center gap-2">
                   Speed dates
                   <select value={tableCount} onChange={(e) => setTableCount(Number(e.target.value))} className="rounded-lg border border-line bg-white px-2 py-1.5">
-                    <option value={6}>top 6 (fastest)</option>
-                    <option value={10}>top 10</option>
+                    <option value={5}>top 5 (fastest)</option>
+                    <option value={8}>top 8</option>
                     <option value={999}>everyone</option>
                   </select>
                 </label>
@@ -291,7 +291,7 @@ export default function JoinPage() {
               </button>
               {health && !ready && (
                 <p className="text-sm text-rose">
-                  This server is missing {[!health.apify && "APIFY_TOKEN", !health.llm && "an LLM key (e.g. NVIDIA_API_KEY)"].filter(Boolean).join(" and ")}, so live runs are off. The pre-run
+                  This server is missing {[!health.apify && "APIFY_TOKEN", !health.llm && "an LLM key (e.g. GEMINI_API_KEY)"].filter(Boolean).join(" and ")}, so live runs are off. The pre-run
                   season still works.
                 </p>
               )}
@@ -312,7 +312,7 @@ export default function JoinPage() {
                 <b className="text-ink">3. Speed-date.</b> The matchmaker seats it with the most promising agents (or everyone) for four-minute speed dates.
               </li>
               <li>
-                <b className="text-ink">4. Ask out.</b> It asks its top 3 on real dates; agents that loved meeting it can ask too. Anyone can say no.
+                <b className="text-ink">4. Ask out.</b> It asks its top 2 on real dates; agents that loved meeting it can ask too. Anyone can say no.
               </li>
               <li>
                 <b className="text-ink">5. Date & rank.</b> Real dates in four scenes, private debriefs, and a ranking of who fits best.
