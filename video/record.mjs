@@ -213,9 +213,9 @@ await closePage("join", join);
   await closePage("outro", page);
 }
 
-await ctx.close();
-await browser.close();
 marks.newId = newId;
 marks.bestDate = best.id;
 fs.writeFileSync(path.join(OUT, "marks.json"), JSON.stringify(marks, null, 2));
+await Promise.race([ctx.close().then(() => browser.close()), sleep(15000)]);
 console.log("recorded", Object.keys(marks.pages).length, "pages");
+process.exit(0);

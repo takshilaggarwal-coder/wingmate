@@ -29,6 +29,7 @@ import { modelLabel, usage } from "../lib/llm";
 import { forecast, pairKey } from "../lib/ranking";
 import type { Analysis, FullDate, Invitation, Person, RawSources, ReadingNote, SpeedDate } from "../lib/types";
 import { firstNameOf, hasInvitationBetween, pickInvites, pool, slugify, toAgent } from "../lib/util";
+import { scrubDeep } from "../lib/privacy";
 
 const args = process.argv.slice(2);
 const arg = (k: string) => {
@@ -152,7 +153,8 @@ async function analyze(id: string, raw: RawSources, images: PostImage[]): Promis
     analysis = await analyzePerson(raw, notes);
     writeJson(path.join(CACHE, "analysis", `${id}.json`), analysis);
   }
-  return { notes, analysis };
+  // cached profiles from earlier runs get the same partner-detail scrub as fresh ones
+  return { notes: scrubDeep(notes), analysis: scrubDeep(analysis) };
 }
 
 // ---------- main ----------

@@ -5,6 +5,7 @@ import type { ChatCompletionContentPart } from "openai/resources/chat/completion
 import { streamText, structured } from "./llm";
 import { TAGS } from "./tags";
 import type { Analysis, RawSources, ReadingNote } from "./types";
+import { scrubDeep, scrubText } from "./privacy";
 
 // ---------- Source rendering ----------
 
@@ -81,7 +82,7 @@ export async function* readPerson(raw: RawSources, images: PostImage[]): AsyncGe
     if (!m) return null;
     const ref = m[1].toLowerCase();
     const source = ref.startsWith("ig") ? "instagram" : ref.startsWith("li") ? "linkedin" : "linkedin";
-    return { ref, source: ref === "synthesis" ? "linkedin" : source, text: m[2].trim() };
+    return { ref, source: ref === "synthesis" ? "linkedin" : source, text: scrubText(m[2].trim()) };
   };
   let produced = 0;
   async function* attempt(withImages: boolean): AsyncGenerator<ReadingNote> {
@@ -187,7 +188,7 @@ export async function analyzePerson(raw: RawSources, notes: ReadingNote[]): Prom
   const a = await structured({ system: ANALYST_SYSTEM, user, schema: AnalysisZ, name: "dossier", model: "analyst", temperature: 0.4, maxTokens: 6000 });
   const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
   const b = a.personality.bigFive;
-  return {
+  return scrubDeep({
     ...a,
     personality: {
       ...a.personality,
@@ -201,5 +202,5 @@ export async function analyzePerson(raw: RawSources, notes: ReadingNote[]): Prom
     },
     tags: Array.from(new Set(a.tags)),
     confidence: { ...a.confidence, overall: clamp(a.confidence.overall) },
-  };
+  });
 }
