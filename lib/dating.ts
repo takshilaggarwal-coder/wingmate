@@ -1,7 +1,7 @@
 // The dating harness. Every agent only sees its own person's private dossier plus the other
 // person's public card. Everything else it learns about the other person, it learns on the date.
 import { z } from "zod";
-import { AGENT_MODEL, MODEL, structured } from "./llm";
+import { structured } from "./llm";
 import type {
   AgentInput,
   Analysis,
@@ -105,6 +105,8 @@ const RatingZ = z.object({
   wantsDate: z.boolean().describe("would you ask them out on a real date for your person?"),
 });
 
+const TurnRatedZ = TurnZ.extend({ rating: RatingZ });
+
 const InviteZ = z.object({
   message: z.string().describe("your invitation, 1-2 sentences, referencing something from the speed date"),
   venue: z.string().describe("a specific kind of place in a specific city, e.g. 'a tiny omakase counter in the West Village'"),
@@ -186,7 +188,8 @@ async function takeTurn(opts: {
   direction: string;
   memory?: string;
   scene?: number;
-}): Promise<ChatLine> {
+  rate?: boolean;
+}): Promise<{ line: ChatLine; rating?: SpeedRating }> {
   const { me, other } = opts;
   const user = `${opts.context}
 
@@ -199,14 +202,21 @@ ${transcript(opts.lines, opts.a, opts.b)}
 YOUR PRIVATE NOTES SO FAR:
 ${myThoughts(opts.lines, me)}
 
-YOUR MOVE: ${opts.direction}`;
-  const r = await structured({ system: me.system, user, schema: TurnZ, name: "turn", model: AGENT_MODEL, temperature: 0.9, maxTokens: 900 });
-  return {
+YOUR MOVE: ${opts.direction}${opts.rate ? `\nThis is your last message. Also give your private rating of ${other.input.firstName} for ${me.input.firstName} (the other agent never sees it).` : ""}`;
+  const r = opts.rate
+    ? await structured({ system: me.system, user, schema: TurnRatedZ, name: "turn_with_rating", model: "agent", temperature: 0.85, maxTokens: 1100 })
+    : await structured({ system: me.system, user, schema: TurnZ, name: "turn", model: "agent", temperature: 0.9, maxTokens: 900 });
+  const line: ChatLine = {
     speaker: me.input.id,
     text: r.say.trim().replace(/^["“]|["”]$/g, ""),
     thought: r.thought.trim(),
     signal: clampInt(r.signal, -2, 2),
     scene: opts.scene,
+  };
+  const rt = "rating" in r ? (r as z.infer<typeof TurnRatedZ>).rating : undefined;
+  return {
+    line,
+    rating: rt ? { score: clampInt(rt.score, 1, 10), note: rt.note, highlight: rt.highlight, wantsDate: !!rt.wantsDate } : undefined,
   };
 }
 
@@ -228,25 +238,22 @@ export async function* runSpeedDate(A: AgentInput, B: AgentInput, table = 1): As
   yield { type: "line", line: opener };
 
   const context = `SETTING: Speed-dating night. You have four minutes with this agent, then a bell rings. You'll exchange only two messages each, so make them count.`;
-  const plan: { who: Speaker; direction: string }[] = [
+  const plan: { who: Speaker; direction: string; rate?: boolean }[] = [
     { who: a, direction: `Open: greet them, give one specific, true hook about ${A.firstName}, and ask one question sparked by their card.` },
     { who: b, direction: `Respond to what they said, share something real about ${B.firstName}, and ask a question that tests one of your agenda items.` },
-    { who: a, direction: `Go one level deeper on whatever sparked (or didn't). Test one of ${A.firstName}'s needs.` },
-    { who: b, direction: `The bell is about to ring. Respond honestly and leave them with one memorable closing line.` },
+    { who: a, direction: `Go one level deeper on whatever sparked (or didn't). Test one of ${A.firstName}'s needs.`, rate: true },
+    { who: b, direction: `The bell is about to ring. Respond honestly and leave them with one memorable closing line.`, rate: true },
   ];
+  const ratings: Record<string, SpeedRating> = {};
   for (const step of plan) {
     const other = step.who === a ? b : a;
-    const line = await takeTurn({ me: step.who, other, a, b, lines, context, direction: step.direction });
+    const { line, rating } = await takeTurn({ me: step.who, other, a, b, lines, context, direction: step.direction, rate: step.rate });
     lines.push(line);
     yield { type: "line", line };
+    if (rating) ratings[step.who.input.id] = rating;
   }
-
-  const rate = async (me: Speaker, other: Speaker): Promise<SpeedRating> => {
-    const user = `The bell rang. Here's the full speed date with ${other.input.firstName}'s agent:\n\n${transcript(lines, a, b)}\n\nYour notes:\n${myThoughts(lines, me)}\n\nWhat ${other.input.firstName} looked like on paper: ${renderCard(other.card)}\n\nRate ${other.input.firstName} for ${me.input.firstName}, privately and honestly.`;
-    const r = await structured({ system: me.system, user, schema: RatingZ, name: "rating", model: AGENT_MODEL, temperature: 0.5, maxTokens: 700 });
-    return { score: clampInt(r.score, 1, 10), note: r.note, highlight: r.highlight, wantsDate: r.wantsDate };
-  };
-  const [ra, rb] = await Promise.all([rate(a, b), rate(b, a)]);
+  const ra = ratings[A.id];
+  const rb = ratings[B.id];
   yield { type: "rating", personId: A.id, rating: ra };
   yield { type: "rating", personId: B.id, rating: rb };
 
@@ -277,7 +284,7 @@ export async function runInvitation(from: AgentInput, to: AgentInput, sd?: Speed
     user: `${speedMemory(sd, f, f, t) || ""}\n\nYou want to ask ${to.firstName}'s agent on a real date on ${from.firstName}'s behalf. ${to.firstName}'s card: ${renderCard(t.card)}\nPropose a specific first date both people would genuinely enjoy (use what you learned), and write the invitation.`,
     schema: InviteZ,
     name: "invitation",
-    model: AGENT_MODEL,
+    model: "agent",
     temperature: 0.9,
     maxTokens: 700,
   });
@@ -286,7 +293,7 @@ export async function runInvitation(from: AgentInput, to: AgentInput, sd?: Speed
     user: `${speedMemory(sd, t, f, t) || ""}\n\n${from.firstName}'s agent is asking ${to.firstName} out (through you):\n"${inv.message}"\nPlan: ${inv.activity} at ${inv.venue}.\n\nDecide on ${to.firstName}'s behalf. Accept if you believe there's a real chance this person is good for ${to.firstName}; decline kindly if not. Reply in character.`,
     schema: ReplyZ,
     name: "reply",
-    model: AGENT_MODEL,
+    model: "agent",
     temperature: 0.7,
     maxTokens: 500,
   });
@@ -322,7 +329,7 @@ export async function* runFullDate(A: AgentInput, B: AgentInput, inv: Invitation
     user: `Date: ${inv.activity} at ${inv.venue}. Why: ${inv.why}\nPerson 1: ${renderCard(a.card)}\nPerson 2: ${renderCard(b.card)}\nDesign the 4 scenes.`,
     schema: DirectorZ,
     name: "date_plan",
-    model: MODEL,
+    model: "analyst",
     temperature: 0.9,
     maxTokens: 1200,
   });
@@ -378,7 +385,7 @@ export async function* runFullDate(A: AgentInput, B: AgentInput, inv: Invitation
       const me = order[t];
       const other = me === a ? b : a;
       const context = `SETTING: A real first date — ${inv.activity} at ${inv.venue}. Tonight is titled "${plan.title}".\nSCENE ${s + 1}/4: ${sc.title} — ${sc.setting}${t >= 1 && sc.twist ? `\nJUST HAPPENED: ${sc.twist}` : ""}`;
-      const line = await takeTurn({
+      const { line } = await takeTurn({
         me,
         other,
         a,
@@ -397,7 +404,7 @@ export async function* runFullDate(A: AgentInput, B: AgentInput, inv: Invitation
   yield { type: "status", message: "Both agents are writing private debriefs for their humans…" };
   const debrief = async (me: Speaker, other: Speaker): Promise<Debrief> => {
     const user = `The date is over. Full transcript ("${plan.title}", ${inv.activity} at ${inv.venue}):\n\n${transcript(lines, a, b)}\n\nYour private notes during the date:\n${myThoughts(lines, me)}\n\nWrite your private debrief for ${me.input.firstName} about ${other.input.name}. Judge fit against ${me.input.firstName}'s needs and dealbreakers in the dossier. Be honest and calibrated — don't inflate.`;
-    const r = await structured({ system: me.system, user, schema: DebriefZ, name: "debrief", model: AGENT_MODEL, temperature: 0.5, maxTokens: 1800 });
+    const r = await structured({ system: me.system, user, schema: DebriefZ, name: "debrief", model: "agent", temperature: 0.5, maxTokens: 1800 });
     const d = r.dimensions;
     const dim = (x: { score: number; note: string }) => ({ score: clampInt(x.score, 1, 10), note: x.note });
     return {

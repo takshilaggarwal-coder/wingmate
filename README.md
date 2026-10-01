@@ -21,9 +21,9 @@ Ranking: who fits each person best
 ## What it does
 
 1. **Find the people.** `data/people.json` lists the real people in the season. Each person is exactly two official links: LinkedIn and a public Instagram.
-2. **Each agent reads its person.** Apify scrapes both profiles. The agent (Grok) reads every role, post, caption and up to six photos. It streams field notes, each citing the item it came from (`[ig-post-4]`, `[li-exp-2]`, …), then writes a schema-validated dossier with evidence for every trait: relationship needs, hobbies, interests, values, personality (traits + Big Five estimate), lifestyle, love-language guess, ideal partner, green flags, dealbreakers, and a private brief for how to date on the person's behalf. The profile page shows all of it, plus a replay of the reading.
+2. **Each agent reads its person.** Apify scrapes both profiles. The agent (a free open-weight LLM) reads every role, post, caption and up to six photos. It streams field notes, each citing the item it came from (`[ig-post-4]`, `[li-exp-2]`, …), then writes a schema-validated dossier with evidence for every trait: relationship needs, hobbies, interests, values, personality (traits + Big Five estimate), lifestyle, love-language guess, ideal partner, green flags, dealbreakers, and a private brief for how to date on the person's behalf. The profile page shows all of it, plus a replay of the reading.
 3. **The agents date.** Each agent is its own model call with its own system prompt: its person's private dossier, a voice, and an agenda. It never sees the other person's dossier, only a dating-app style public card. What it learns about the other side, it learns on the date.
-   - **Speed-dating night:** every pair meets for four messages, then each agent rates privately (1–10, would ask out?).
+   - **Speed-dating night:** every pair meets for four messages; with its last message each agent privately rates the other (1–10, would ask out?).
    - **Invitations:** every agent asks out its top three. The receiving agent decides on its own person's behalf and can decline.
    - **Real dates:** a neutral *Date Director* plans four scenes at the chosen venue, each with a curveball. The agents talk for 16 turns, remember their speed date, probe needs and dealbreakers, and name friction rather than glossing over it. Every message also carries a private note to the agent's human and a −2…+2 signal that drives the live "feeling it" meters.
    - **Debriefs:** each agent writes a private report to its own human: six dimension scores, green flags, concerns, the best moment, a verdict (second date / maybe / pass) and an overall fit from 0 to 100.
@@ -38,7 +38,7 @@ Open **Add someone** (`/join`) and paste a LinkedIn URL and a public Instagram U
 | Layer | What |
 | --- | --- |
 | Scraping | [Apify](https://apify.com) REST API, 3 actors run in parallel with no cookies or logins: `harvestapi/linkedin-profile-scraper` (headline, about, experience, education, skills), `harvestapi/linkedin-profile-posts` (about 10 recent posts), `apify/instagram-profile-scraper` (bio, category, followers, latest 12 posts with captions, hashtags, locations, images). Private Instagram accounts are rejected. `lib/apify.ts` normalises both into one schema. |
-| Agents | xAI **Grok** (`grok-4.7` by default) through the OpenAI-compatible SDK, with JSON-schema structured outputs (zod) for every agent turn, rating, invitation, date plan and debrief. Instagram photos are fetched server-side and passed to the model as images. |
+| Agents | **Free LLM APIs only.** Default: NVIDIA NIM (free, no card, 40 req/min) with `meta/llama-3.3-70b-instruct` for agents and `meta/llama-4-maverick-17b-128e-instruct` for reading photos. Any OpenAI-compatible provider works and several can be chained as automatic fallbacks: Gemini, Groq, Cerebras, OpenRouter, Mistral, xAI or local Ollama (`lib/llm.ts`). Every agent turn, rating, invitation, date plan and debrief is JSON validated against a zod schema, with a repair retry. Instagram photos are fetched server-side and passed to the vision model. |
 | App | Next.js 15 (App Router) + TypeScript + Tailwind v4. API routes stream NDJSON so the reading and the dates render live. |
 | Data | The 25-person season was produced offline with the same code (`npm run season`) and ships as static JSON in `public/season/`. People added live are stored client-side. |
 
@@ -55,7 +55,7 @@ app/              pages (season, agents, profile, dates, rankings, join, how) + 
 
 ```bash
 npm install
-cp .env.example .env.local   # add APIFY_TOKEN and XAI_API_KEY
+cp .env.example .env.local   # add APIFY_TOKEN and NVIDIA_API_KEY (both free)
 npm run dev                  # http://localhost:3000
 ```
 
@@ -66,7 +66,7 @@ npm run season                    # full season (25 people)
 npm run season -- --limit 6       # quick test
 ```
 
-Deploy on Vercel: import the repo, set `APIFY_TOKEN` and `XAI_API_KEY`, deploy. Optional env: `XAI_MODEL`, `XAI_AGENT_MODEL`, `LLM_CONCURRENCY`.
+Deploy on Vercel: import the repo, set `APIFY_TOKEN` and `NVIDIA_API_KEY` (plus any optional fallback keys), deploy. Optional env: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_VISION_MODEL`, `LLM_RPM`, `LLM_CONCURRENCY`.
 
 ## The people
 

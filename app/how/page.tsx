@@ -61,7 +61,8 @@ export default function HowPage() {
           <Card>
             <h3 className="font-display text-2xl">2 · Reading (the analysis)</h3>
             <p className="mt-1 text-muted">
-              The agent (Grok, via xAI&apos;s API) gets the two sources and up to six Instagram photos. First it streams field notes — one observation per item, each
+              The agent (an open-weight LLM on a free API — Llama 3.3 70B via NVIDIA NIM by default) gets the two sources and up to six Instagram photos (read
+              by a vision model). First it streams field notes — one observation per item, each
               citing the exact LinkedIn or Instagram item it came from (<code>[ig-post-4]</code>, <code>[li-exp-2]</code>…). Then it writes a schema-validated dossier:
               5 relationship needs, hobbies, interests, values, personality traits + Big Five estimate, lifestyle, love language guess, ideal partner, green flags,
               dealbreakers, and a private brief for how to date on the person&apos;s behalf. Every trait carries its evidence. It is told to ignore anything it knows
@@ -77,7 +78,8 @@ export default function HowPage() {
             </p>
             <ul className="mt-3 list-disc space-y-1.5 pl-5 text-muted">
               <li>
-                <b className="text-ink">Speed-dating night:</b> every pair meets for four messages, then both agents rate privately (1–10, would-ask-out).
+                <b className="text-ink">Speed-dating night:</b> every pair meets for four messages; with its last message each agent privately rates the other (1–10,
+                would-ask-out).
               </li>
               <li>
                 <b className="text-ink">Invitations:</b> each agent asks out its top 3. The receiving agent decides on its person&apos;s behalf, and can say no.
@@ -105,8 +107,10 @@ export default function HowPage() {
             <h3 className="font-display text-2xl">Stack</h3>
             <p className="mt-1 text-muted">
               Next.js 15 (App Router) + TypeScript + Tailwind on Vercel. API routes stream NDJSON so you watch the reading and the dates live. Apify REST API for
-              scraping. xAI Grok ({s?.model || "grok-4.7"}) through the OpenAI-compatible SDK with JSON-schema structured outputs (zod). The 25-person season was run
-              offline with the exact same code (<code>npm run season</code>) and ships as static JSON; people you add live are stored in your browser.
+              scraping. LLM: {s?.model || "NVIDIA NIM · meta/llama-3.3-70b-instruct"} — free-tier, through any OpenAI-compatible endpoint (NVIDIA, Gemini, Groq,
+              Cerebras, OpenRouter, Mistral or local Ollama, with automatic fallback). Every agent reply is JSON validated against a zod schema, with a repair retry.
+              The 25-person season was run offline with the exact same code (<code>npm run season</code>) and ships as static JSON; people you add live are stored in
+              your browser.
             </p>
           </Card>
           <Card className="bg-gold-soft">

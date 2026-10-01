@@ -62,7 +62,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     setLocal(loadLocal());
-    fetch("/season/season.json", { cache: "force-cache" })
+    fetch("/season/season.json", { cache: "no-cache" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`season ${r.status}`))))
       .then((s: Season) => setSeason(s))
       .catch((e) => setError(String(e.message || e)))

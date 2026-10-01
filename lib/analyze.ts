@@ -2,7 +2,7 @@
 // (2) a structured profile synthesized from the sources + notes.
 import { z } from "zod";
 import type { ChatCompletionContentPart } from "openai/resources/chat/completions";
-import { MODEL, streamText, structured } from "./llm";
+import { streamText, structured } from "./llm";
 import { TAGS } from "./tags";
 import type { Analysis, RawSources, ReadingNote } from "./types";
 
@@ -85,7 +85,7 @@ export async function* readPerson(raw: RawSources, images: PostImage[]): AsyncGe
   };
   let produced = 0;
   async function* attempt(withImages: boolean): AsyncGenerator<ReadingNote> {
-    for await (const delta of streamText({ system: READER_SYSTEM, user: withImages ? contentWithImages(text, images) : text, model: MODEL, temperature: 0.4 })) {
+    for await (const delta of streamText({ system: READER_SYSTEM, user: withImages ? contentWithImages(text, images) : text, temperature: 0.4 })) {
       buf += delta;
       let nl: number;
       while ((nl = buf.indexOf("\n")) >= 0) {
@@ -184,7 +184,7 @@ Build their dating dossier. Rules:
 
 export async function analyzePerson(raw: RawSources, notes: ReadingNote[]): Promise<Analysis> {
   const user = `SOURCES\n${renderSources(raw)}\n\nYOUR FIELD NOTES\n${notes.map((n) => `[${n.ref}] ${n.text}`).join("\n")}\n\nNow write ${raw.linkedin.name}'s dossier.`;
-  const a = await structured({ system: ANALYST_SYSTEM, user, schema: AnalysisZ, name: "dossier", model: MODEL, temperature: 0.4, maxTokens: 6000 });
+  const a = await structured({ system: ANALYST_SYSTEM, user, schema: AnalysisZ, name: "dossier", model: "analyst", temperature: 0.4, maxTokens: 6000 });
   const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
   const b = a.personality.bigFive;
   return {

@@ -25,7 +25,7 @@ import {
 } from "../lib/apify";
 import { analyzePerson, readPerson, type PostImage } from "../lib/analyze";
 import { drain, runFullDate, runInvitation, runSpeedDate } from "../lib/dating";
-import { MODEL, usage } from "../lib/llm";
+import { modelLabel, usage } from "../lib/llm";
 import { pairKey } from "../lib/ranking";
 import type { Analysis, FullDate, Invitation, Person, RawSources, ReadingNote, SpeedDate } from "../lib/types";
 import { firstNameOf, hasInvitationBetween, pickInvites, pool, slugify, toAgent } from "../lib/util";
@@ -157,7 +157,7 @@ async function analyze(id: string, raw: RawSources, images: PostImage[]): Promis
 async function main() {
   const seeds = JSON.parse(fs.readFileSync(path.join(ROOT, "data/people.json"), "utf8")) as SeedPerson[];
   const list = LIMIT ? seeds.slice(0, LIMIT) : seeds;
-  log(`season: ${list.length} candidates, target ${LIMIT || TARGET}, model ${MODEL}`);
+  log(`season: ${list.length} candidates, target ${LIMIT || TARGET}, model ${modelLabel()}`);
 
   // 1. scrape (3 people at a time; each person = 3 Apify runs)
   const raws = await pool(list, 3, async (s) => ({ seed: s, raw: await scrape(s) }));
@@ -285,7 +285,7 @@ async function main() {
 function write(people: Person[], speedDates: SpeedDate[], invitations: Invitation[], dates: FullDate[]) {
   const season = {
     generatedAt: new Date().toISOString(),
-    model: MODEL,
+    model: modelLabel(),
     people,
     speedDates,
     invitations,

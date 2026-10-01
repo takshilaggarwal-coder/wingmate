@@ -9,6 +9,7 @@ import { Avatar, Card, SourceBadge, Tag, Typing, cx, fmt } from "@/components/ui
 import { pool, postJson, streamNdjson } from "@/lib/client";
 import type { Analysis, AnalyzeEvent, ChatLine, DateEvent, FullDate, InterestedIn, Invitation, Person, RawSources, ReadingNote, SpeedDate } from "@/lib/types";
 import { firstNameOf, pickInvites, slugify, toAgent } from "@/lib/util";
+import { forecast } from "@/lib/ranking";
 
 type Stage = "form" | "scraping" | "reading" | "speed" | "invites" | "dates" | "done";
 type RunStatus = Record<"linkedinProfile" | "linkedinPosts" | "instagram", string>;
@@ -48,6 +49,7 @@ export default function JoinPage() {
   const [instagram, setInstagram] = useState("");
   const [interestedIn, setInterestedIn] = useState<InterestedIn>("anyone");
   const [withSeason, setWithSeason] = useState(true);
+  const [tableCount, setTableCount] = useState(10);
   const [health, setHealth] = useState<{ apify: boolean; llm: boolean; model: string } | null>(null);
 
   const [stage, setStage] = useState<Stage>("form");
@@ -138,7 +140,13 @@ export default function JoinPage() {
       setPerson(me);
 
       // 3. Speed-date everyone in the pool
-      const poolPeople = store.people.filter((p) => p.id !== me.id && p.id !== existing?.id && (withSeason || p.origin === "local"));
+      // The matchmaker seats the most promising agents first (free-tier friendly); "all" meets everyone.
+      const poolPeople = store.people
+        .filter((p) => p.id !== me.id && p.id !== existing?.id && (withSeason || p.origin === "local"))
+        .map((p) => ({ p, f: forecast(me.analysis, p.analysis).score }))
+        .sort((x, y) => y.f - x.f)
+        .slice(0, tableCount >= 999 ? undefined : tableCount)
+        .map((x) => x.p);
       if (!poolPeople.length) {
         setStage("done");
         return;
@@ -147,7 +155,7 @@ export default function JoinPage() {
       const tbl: Table[] = poolPeople.map((o) => ({ other: o, status: "waiting", lines: [] }));
       setTables([...tbl]);
       const speedDates: SpeedDate[] = [];
-      await pool(tbl, 5, async (t, i) => {
+      await pool(tbl, 3, async (t, i) => {
         t.status = "live";
         setTables([...tbl]);
         try {
@@ -241,7 +249,7 @@ export default function JoinPage() {
             <h1 className="font-display text-5xl leading-tight sm:text-6xl">Two links in. An agent out.</h1>
             <p className="mt-4 max-w-lg text-muted">
               Paste the person&apos;s official LinkedIn and their public Instagram. Their agent reads both, writes a profile, then dates every agent in the season and
-              comes back with a ranking. Takes about 3–6 minutes; you can watch every step.
+              comes back with a ranking. Takes about 3–6 minutes on free-tier APIs; you can watch every step.
             </p>
             <form onSubmit={start} className="mt-8 space-y-4">
               <label className="block">
@@ -269,13 +277,21 @@ export default function JoinPage() {
                   <input type="checkbox" checked={withSeason} onChange={(e) => setWithSeason(e.target.checked)} className="accent-rose" />
                   Date the {store.season?.people.length || 25} season agents too
                 </label>
+                <label className="flex items-center gap-2">
+                  Speed dates
+                  <select value={tableCount} onChange={(e) => setTableCount(Number(e.target.value))} className="rounded-lg border border-line bg-white px-2 py-1.5">
+                    <option value={6}>top 6 (fastest)</option>
+                    <option value={10}>top 10</option>
+                    <option value={999}>everyone</option>
+                  </select>
+                </label>
               </div>
               <button disabled={!ready} className="rounded-full bg-rose px-6 py-3 font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-40">
                 Create their agent →
               </button>
               {health && !ready && (
                 <p className="text-sm text-rose">
-                  This server is missing {[!health.apify && "APIFY_TOKEN", !health.llm && "XAI_API_KEY"].filter(Boolean).join(" and ")}, so live runs are off. The pre-run
+                  This server is missing {[!health.apify && "APIFY_TOKEN", !health.llm && "an LLM key (e.g. NVIDIA_API_KEY)"].filter(Boolean).join(" and ")}, so live runs are off. The pre-run
                   season still works.
                 </p>
               )}
@@ -293,7 +309,7 @@ export default function JoinPage() {
                 values, personality.
               </li>
               <li>
-                <b className="text-ink">3. Speed-date.</b> It meets every agent in the pool for a four-minute speed date.
+                <b className="text-ink">3. Speed-date.</b> The matchmaker seats it with the most promising agents (or everyone) for four-minute speed dates.
               </li>
               <li>
                 <b className="text-ink">4. Ask out.</b> It asks its top 3 on real dates; agents that loved meeting it can ask too. Anyone can say no.
