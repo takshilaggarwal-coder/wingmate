@@ -220,7 +220,7 @@ async function main() {
   }
   log(`speed dating: ${pairs.length} tables`);
   let done = 0;
-  const speedDates: SpeedDate[] = await pool(pairs, Number(process.env.SPEED_CONCURRENCY || 6), async ([a, b], i) => {
+  const speedDates: SpeedDate[] = await pool(pairs, Number(process.env.SPEED_CONCURRENCY || 3), async ([a, b], i) => {
     const file = path.join(CACHE, "speed", `${a.id}__${b.id}.json`);
     let sd = readJson<SpeedDate>(file);
     if (!sd) {
@@ -278,7 +278,7 @@ async function main() {
   const accepted = invitations.filter((i) => i.accepted);
   let dd = 0;
   const dates: FullDate[] = (
-    await pool(accepted, Number(process.env.DATE_CONCURRENCY || 3), async (inv) => {
+    await pool(accepted, Number(process.env.DATE_CONCURRENCY || 2), async (inv) => {
       const file = path.join(CACHE, "date", `${inv.from}__${inv.to}.json`);
       let fd = readJson<FullDate>(file);
       if (!fd) {

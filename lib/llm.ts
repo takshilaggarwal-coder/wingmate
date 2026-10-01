@@ -37,11 +37,10 @@ export const PRESETS: Record<string, Preset> = {
       { id: "gemini-3.8-flash", rpm: 8, vision: true, jsonSchema: true, role: "analyst", reasoning: "low" },
       { id: "gemini-3-flash-preview", rpm: 8, vision: true, jsonSchema: true, role: "analyst", reasoning: "low" },
       { id: "gemini-3.5-flash-lite", rpm: 14, vision: true, jsonSchema: true },
-      { id: "gemma-4-26b-a4b-it", rpm: 14, vision: true, jsonSchema: true },
+      { id: "gemma-4-26b-a4b-it", rpm: 4, vision: true, jsonSchema: true }, // Gemma's free tier is token-limited per minute
       { id: "gemini-3.1-flash-lite", rpm: 14, vision: true, jsonSchema: true },
       { id: "gemini-flash-lite-latest", rpm: 14, vision: true, jsonSchema: true },
       { id: "gemini-3.1-flash-lite-preview", rpm: 10, vision: true, jsonSchema: true },
-      { id: "gemma-4-31b-it", rpm: 5, vision: true, jsonSchema: true },
     ],
   },
   groq: {
@@ -99,6 +98,7 @@ interface Slot {
   reasoning?: "low" | "none";
   nextFree: number;
   coolUntil: number;
+  latency: number; // moving average of response time (ms) — slow/congested models get used less
 }
 
 let _slots: Slot[] | null = null;
@@ -122,10 +122,11 @@ function buildSlots(): Slot[] {
       reasoning: m.reasoning,
       nextFree: 0,
       coolUntil: 0,
+      latency: 3000,
     });
 
   if (process.env.LLM_BASE_URL && process.env.LLM_API_KEY) {
-    const client = new OpenAI({ apiKey: process.env.LLM_API_KEY, baseURL: process.env.LLM_BASE_URL, maxRetries: 1, timeout: 120_000 });
+    const client = new OpenAI({ apiKey: process.env.LLM_API_KEY, baseURL: process.env.LLM_BASE_URL, maxRetries: 0, timeout: Number(process.env.LLM_TIMEOUT_MS || 45_000) });
     for (const id of (process.env.LLM_MODELS || process.env.LLM_MODEL || "gpt-4o-mini").split(",").map((s) => s.trim()).filter(Boolean))
       add("custom", "Custom endpoint", client, { id, rpm: Number(process.env.LLM_RPM || 30), vision: process.env.LLM_VISION === "1", jsonSchema: process.env.LLM_JSON_SCHEMA === "1" });
   }
@@ -134,7 +135,7 @@ function buildSlots(): Slot[] {
     const p = PRESETS[name];
     const key = process.env[p.keyEnv];
     if (!key) continue;
-    const client = new OpenAI({ apiKey: key, baseURL: p.baseURL, maxRetries: 1, timeout: 120_000 });
+    const client = new OpenAI({ apiKey: key, baseURL: p.baseURL, maxRetries: 0, timeout: Number(process.env.LLM_TIMEOUT_MS || 45_000) });
     const override = name === firstKeyed ? process.env.LLM_MODELS : undefined;
     const models = override
       ? override.split(",").map((id) => p.models.find((m) => m.id === id.trim()) || { id: id.trim(), rpm: 10, vision: true })
@@ -163,7 +164,7 @@ export function modelLabel(): string {
 
 // ---------- Scheduling ----------
 
-const MAX_CONCURRENT = Number(process.env.LLM_CONCURRENCY || 6);
+const MAX_CONCURRENT = Number(process.env.LLM_CONCURRENCY || 4); // free tiers stall when flooded with parallel requests
 let active = 0;
 const waiters: (() => void)[] = [];
 async function withConcurrency<T>(fn: () => Promise<T>): Promise<T> {
@@ -189,16 +190,11 @@ async function acquire(needVision: boolean, exclude: Set<Slot>, role: Role): Pro
   const readyPreferred = preferred.filter((s) => s.coolUntil <= now);
   const readyAll = all.filter((s) => s.coolUntil <= now);
   const pool = readyPreferred.length ? readyPreferred : readyAll.length ? readyAll : preferred.length ? preferred : all;
+  // Earliest expected finish = when the slot is free to send + how long it has recently taken to answer.
+  const cost = (s: Slot) => Math.max(now, s.nextFree, s.coolUntil) + s.latency;
   let best = pool[0];
-  let bestAt = Math.max(best.nextFree, best.coolUntil);
-  for (const s of pool) {
-    const at = Math.max(s.nextFree, s.coolUntil);
-    if (at < bestAt - 500) {
-      best = s;
-      bestAt = at;
-    }
-  }
-  const at = Math.max(now, bestAt);
+  for (const s of pool) if (cost(s) < cost(best) - 300) best = s;
+  const at = Math.max(now, best.nextFree, best.coolUntil);
   best.nextFree = at + 60_000 / Math.max(1, best.rpm);
   if (at > now) await sleep(Math.min(at - now, 120_000));
   return best;
@@ -221,10 +217,14 @@ async function run<T>(needVision: boolean, role: Role, fn: (s: Slot) => Promise<
       const slot = await acquire(needVision, tried.size >= slots().length ? new Set() : tried, role);
       if (!slot) break;
       tried.add(slot);
+      const started = Date.now();
       try {
-        return await fn(slot);
+        const out = await fn(slot);
+        slot.latency = slot.latency * 0.7 + (Date.now() - started) * 0.3;
+        return out;
       } catch (e) {
         lastErr = e;
+        slot.latency = slot.latency * 0.5 + (Date.now() - started) * 0.5;
         const { status, message } = errInfo(e);
         if (process.env.LLM_DEBUG) console.warn(`[llm] ${slot.id} → ${status}: ${message.slice(0, 140)}`);
         if (status === 429) {
@@ -237,7 +237,7 @@ async function run<T>(needVision: boolean, role: Role, fn: (s: Slot) => Promise<
           continue;
         }
         if (status === undefined || status >= 500 || status === 408) {
-          slot.coolUntil = Date.now() + 20_000;
+          slot.coolUntil = Date.now() + 90_000; // timed out / overloaded: give it a rest
           await sleep(1500);
           continue;
         }
@@ -254,7 +254,7 @@ const schemaTooComplex = new Set<string>(); // "model:schemaName" pairs that nee
 // ---------- JSON helpers ----------
 
 function extractJson(text: string): unknown {
-  let t = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  let t = text.replace(/<(think|thought|thinking)>[\s\S]*?<\/\1>/gi, "").replace(/^[\s\S]*<\/(think|thought|thinking)>/i, "").trim();
   t = t.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "");
   const start = t.indexOf("{");
   const end = t.lastIndexOf("}");
@@ -407,11 +407,12 @@ export async function* streamText(opts: { system: string; user: string | ChatCom
   for await (const chunk of stream) {
     let d = chunk.choices[0]?.delta?.content || "";
     if (!d) continue;
-    if (d.includes("<think>")) inThink = true;
+    if (/<(think|thought|thinking)>/.test(d)) inThink = true;
     if (inThink) {
-      if (d.includes("</think>")) {
+      const close = d.match(/<\/(think|thought|thinking)>/);
+      if (close) {
         inThink = false;
-        d = d.split("</think>").pop() || "";
+        d = d.slice((close.index || 0) + close[0].length);
       } else continue;
     }
     if (d) yield d;
