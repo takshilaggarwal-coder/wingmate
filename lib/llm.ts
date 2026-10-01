@@ -3,7 +3,12 @@
 // Each provider has a pool of models; when one is rate-limited or out of daily quota we rotate to the
 // next model, then to the next provider (if more keys are set).
 import OpenAI from "openai";
-import type { ChatCompletionContentPart, ChatCompletionCreateParamsNonStreaming, ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import type {
+  ChatCompletionContentPart,
+  ChatCompletionCreateParamsNonStreaming,
+  ChatCompletionCreateParamsStreaming,
+  ChatCompletionMessageParam,
+} from "openai/resources/chat/completions";
 import { z } from "zod";
 
 interface ModelSpec {
@@ -11,7 +16,9 @@ interface ModelSpec {
   rpm: number;
   vision?: boolean;
   jsonSchema?: boolean;
-  noSystem?: boolean; // e.g. Gemma on the Gemini API rejects system instructions
+  noSystem?: boolean; // some models reject system instructions
+  role?: "analyst"; // reserved for the deeper reads (profiles), so their small daily quota isn't spent on chit-chat
+  reasoning?: "low" | "none"; // thinking models: keep thinking short so replies don't get cut off
 }
 
 interface Preset {
@@ -27,10 +34,14 @@ export const PRESETS: Record<string, Preset> = {
     baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
     keyEnv: "GEMINI_API_KEY",
     models: [
+      { id: "gemini-3.8-flash", rpm: 8, vision: true, jsonSchema: true, role: "analyst", reasoning: "low" },
+      { id: "gemini-3-flash-preview", rpm: 8, vision: true, jsonSchema: true, role: "analyst", reasoning: "low" },
+      { id: "gemini-3.5-flash-lite", rpm: 14, vision: true, jsonSchema: true },
+      { id: "gemma-4-26b-a4b-it", rpm: 14, vision: true, jsonSchema: true },
+      { id: "gemini-3.1-flash-lite", rpm: 14, vision: true, jsonSchema: true },
       { id: "gemini-flash-lite-latest", rpm: 14, vision: true, jsonSchema: true },
-      { id: "gemini-flash-latest", rpm: 9, vision: true, jsonSchema: true },
-      { id: "gemini-2.5-flash-lite", rpm: 14, vision: true, jsonSchema: true },
-      { id: "gemma-3-27b-it", rpm: 6, vision: true, noSystem: true },
+      { id: "gemini-3.1-flash-lite-preview", rpm: 10, vision: true, jsonSchema: true },
+      { id: "gemma-4-31b-it", rpm: 5, vision: true, jsonSchema: true },
     ],
   },
   groq: {
@@ -84,6 +95,8 @@ interface Slot {
   vision: boolean;
   jsonMode: "schema" | "object" | "none";
   noSystem: boolean;
+  role?: "analyst";
+  reasoning?: "low" | "none";
   nextFree: number;
   coolUntil: number;
 }
@@ -105,6 +118,8 @@ function buildSlots(): Slot[] {
       vision: !!m.vision,
       jsonMode: m.jsonSchema ? "schema" : "object",
       noSystem: !!m.noSystem,
+      role: m.role,
+      reasoning: m.reasoning,
       nextFree: 0,
       coolUntil: 0,
     });
@@ -165,12 +180,15 @@ async function withConcurrency<T>(fn: () => Promise<T>): Promise<T> {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Pick the usable slot that frees up soonest (config order breaks ties) and reserve a request on it. */
-async function acquire(needVision: boolean, exclude: Set<Slot>): Promise<Slot | null> {
+async function acquire(needVision: boolean, exclude: Set<Slot>, role: Role): Promise<Slot | null> {
   const now = Date.now();
-  const candidates = slots().filter((s) => !exclude.has(s) && (!needVision || s.vision));
-  if (!candidates.length) return null;
-  const ready = candidates.filter((s) => s.coolUntil <= now);
-  const pool = ready.length ? ready : candidates;
+  const all = slots().filter((s) => !exclude.has(s) && (!needVision || s.vision));
+  if (!all.length) return null;
+  // Analyst work prefers the stronger "analyst" models; agent chatter stays off them while others are available.
+  const preferred = all.filter((s) => (role === "analyst" ? s.role === "analyst" : s.role !== "analyst"));
+  const readyPreferred = preferred.filter((s) => s.coolUntil <= now);
+  const readyAll = all.filter((s) => s.coolUntil <= now);
+  const pool = readyPreferred.length ? readyPreferred : readyAll.length ? readyAll : preferred.length ? preferred : all;
   let best = pool[0];
   let bestAt = Math.max(best.nextFree, best.coolUntil);
   for (const s of pool) {
@@ -192,13 +210,15 @@ function errInfo(e: unknown): { status?: number; message: string } {
 }
 
 /** Run fn on a model slot; rotate across models/providers on rate limits, quota exhaustion and outages. */
-async function run<T>(needVision: boolean, fn: (s: Slot) => Promise<T>): Promise<T> {
+type Role = "agent" | "analyst";
+
+async function run<T>(needVision: boolean, role: Role, fn: (s: Slot) => Promise<T>): Promise<T> {
   if (!slots().length) throw new Error("No LLM API key configured. Set GEMINI_API_KEY (free at aistudio.google.com/apikey) or another provider key.");
   return withConcurrency(async () => {
     let lastErr: unknown;
     const tried = new Set<Slot>();
     for (let attempt = 0; attempt < 10; attempt++) {
-      const slot = await acquire(needVision, tried.size >= slots().length ? new Set() : tried);
+      const slot = await acquire(needVision, tried.size >= slots().length ? new Set() : tried, role);
       if (!slot) break;
       tried.add(slot);
       try {
@@ -206,6 +226,7 @@ async function run<T>(needVision: boolean, fn: (s: Slot) => Promise<T>): Promise
       } catch (e) {
         lastErr = e;
         const { status, message } = errInfo(e);
+        if (process.env.LLM_DEBUG) console.warn(`[llm] ${slot.id} → ${status}: ${message.slice(0, 140)}`);
         if (status === 429) {
           const daily = /per.?day|daily|RPD|quota/i.test(message);
           slot.coolUntil = Date.now() + (daily ? 60 * 60_000 : 45_000);
@@ -228,6 +249,7 @@ async function run<T>(needVision: boolean, fn: (s: Slot) => Promise<T>): Promise
 }
 
 export const usage = { calls: 0, input: 0, output: 0 };
+const schemaTooComplex = new Set<string>(); // "model:schemaName" pairs that need plain JSON mode
 
 // ---------- JSON helpers ----------
 
@@ -303,7 +325,7 @@ export async function structured<S extends z.ZodType>(opts: {
   let feedback = "";
 
   for (let attempt = 0; attempt < 3; attempt++) {
-    const text = await run(needVision, async (slot) => {
+    const text = await run(needVision, opts.model === "analyst" ? "analyst" : "agent", async (slot) => {
       for (let step = 0; step < 3; step++) {
         const system =
           opts.system +
@@ -313,10 +335,12 @@ export async function structured<S extends z.ZodType>(opts: {
           model: slot.id,
           messages: messagesFor(slot, system, opts.user),
           temperature: opts.temperature ?? 0.8,
-          max_tokens: opts.maxTokens ?? 2000,
+          max_tokens: (opts.maxTokens ?? 2000) + (slot.reasoning ? 3000 : 0),
         };
-        if (slot.jsonMode === "schema") params.response_format = { type: "json_schema", json_schema: { name: opts.name, schema: jsonSchema, strict: false } };
-        else if (slot.jsonMode === "object") params.response_format = { type: "json_object" };
+        if (slot.reasoning) (params as unknown as Record<string, unknown>).reasoning_effort = slot.reasoning;
+        const mode = slot.jsonMode === "schema" && schemaTooComplex.has(`${slot.id}:${opts.name}`) ? "object" : slot.jsonMode;
+        if (mode === "schema") params.response_format = { type: "json_schema", json_schema: { name: opts.name, schema: jsonSchema, strict: false } };
+        else if (mode === "object") params.response_format = { type: "json_object" };
         try {
           const res = await slot.client.chat.completions.create(params);
           usage.calls++;
@@ -329,8 +353,14 @@ export async function structured<S extends z.ZodType>(opts: {
             slot.noSystem = true; // this model has no system role: inline the instructions
             continue;
           }
-          if (status === 400 && slot.jsonMode !== "none" && /response.?format|json|schema|mime/i.test(message)) {
-            slot.jsonMode = slot.jsonMode === "schema" ? "object" : "none"; // step down the JSON mode
+          if (status === 400 && slot.jsonMode !== "none") {
+            // Strict schemas can be too complex for some endpoints ("invalid argument"): step down to plain JSON
+            // mode for this request — the reply is still validated against the zod schema below.
+            if (slot.jsonMode === "schema" && !/response.?format|json|schema|mime/i.test(message)) {
+              schemaTooComplex.add(`${slot.id}:${opts.name}`);
+            } else {
+              slot.jsonMode = slot.jsonMode === "schema" ? "object" : "none";
+            }
             continue;
           }
           throw e;
@@ -354,21 +384,22 @@ export async function structured<S extends z.ZodType>(opts: {
 }
 
 /** Streamed plain-text call; yields text deltas. Picks a vision-capable model when images are attached. */
-export async function* streamText(opts: { system: string; user: string | ChatCompletionContentPart[]; temperature?: number; maxTokens?: number }): AsyncGenerator<string> {
+export async function* streamText(opts: { system: string; user: string | ChatCompletionContentPart[]; temperature?: number; maxTokens?: number; role?: Role }): AsyncGenerator<string> {
   const needVision = Array.isArray(opts.user) && opts.user.some((p) => p.type === "image_url");
   if (needVision && !slots().some((s) => s.vision)) {
     const err = new Error("no vision model configured") as Error & { status: number };
     err.status = 400;
     throw err;
   }
-  const stream = await run(needVision, async (slot) => {
+  const stream = await run(needVision, opts.role || "analyst", async (slot) => {
     const s = await slot.client.chat.completions.create({
       model: slot.id,
       messages: messagesFor(slot, opts.system, opts.user),
       temperature: opts.temperature ?? 0.5,
-      max_tokens: opts.maxTokens ?? 3000,
+      max_tokens: (opts.maxTokens ?? 3000) + (slot.reasoning ? 3000 : 0),
       stream: true,
-    });
+      ...(slot.reasoning ? { reasoning_effort: slot.reasoning } : {}),
+    } as ChatCompletionCreateParamsStreaming);
     usage.calls++;
     return s;
   });

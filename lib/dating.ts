@@ -99,7 +99,7 @@ const TurnZ = z.object({
 });
 
 const RatingZ = z.object({
-  score: z.number().describe("integer 1-10. 5 = fine but nothing special; 8+ = you'd genuinely want your person to go on a real date; most speed dates land 4-7"),
+  score: z.number().describe("integer 1-10. 5 = fine but nothing special; 8+ = you'd genuinely want your person to go on a real date; most speed dates land 4-7, and a nice conversation alone is a 5 or 6"),
   note: z.string().describe("one-sentence private verdict for your person"),
   highlight: z.string().describe("the moment or line that mattered most"),
   wantsDate: z.boolean().describe("would you ask them out on a real date for your person?"),
@@ -135,7 +135,7 @@ const DirectorZ = z.object({
 const DimZ = z.object({ score: z.number().describe("integer 1-10"), note: z.string().describe("one sentence with evidence from the date") });
 
 const DebriefZ = z.object({
-  overall: z.number().describe("0-100 fit for your person. Calibrate: 50 = pleasant but not right; 70 = promising; 85+ = rare, strong fit"),
+  overall: z.number().describe("0-100 fit for your person. Calibrate hard: most first dates land 45-70. 50 = pleasant but not right; 65 = promising; 75 = strong; 85+ only if nearly every need was clearly met with evidence from the date and no real concern remains"),
   verdict: z.enum(["second date", "maybe", "pass"]),
   headline: z.string().describe("one punchy line summarising the date for your person"),
   dimensions: z.object({
@@ -313,7 +313,7 @@ export async function runInvitation(from: AgentInput, to: AgentInput, sd?: Speed
 
 // ---------- The real date ----------
 
-const DIRECTOR_SYSTEM = `You are the Date Director in a simulation where two AI agents go on a real first date on behalf of their humans. You design the date so it reveals compatibility: vivid, specific, grounded in the venue and in both people's public cards, and with small unpredictable moments the way real dates have. Keep it PG, warm and a little cinematic.`;
+const DIRECTOR_SYSTEM = `You are the Date Director in a simulation where two AI agents go on a real first date on behalf of their humans. The humans are NOT there — only their agents are. Always refer to the participants as "<FirstName>'s agent" (e.g. "Logan's agent"), never as the humans themselves. You design the date so it reveals compatibility: vivid, specific, grounded in the venue and in both people's public cards, and with small unpredictable moments the way real dates have. Keep it PG, warm and a little cinematic. Settings and twists are 1-2 sentences each.`;
 
 export function dateId(a: string, b: string) {
   return `d_${a}__${b}`;
@@ -326,7 +326,7 @@ export async function* runFullDate(A: AgentInput, B: AgentInput, inv: Invitation
 
   const plan = await structured({
     system: DIRECTOR_SYSTEM,
-    user: `Date: ${inv.activity} at ${inv.venue}. Why: ${inv.why}\nPerson 1: ${renderCard(a.card)}\nPerson 2: ${renderCard(b.card)}\nDesign the 4 scenes.`,
+    user: `Date: ${inv.activity} at ${inv.venue}. Why: ${inv.why}\nAgent 1 represents: ${renderCard(a.card)}\nAgent 2 represents: ${renderCard(b.card)}\nDesign the 4 scenes for ${A.firstName}'s agent and ${B.firstName}'s agent.`,
     schema: DirectorZ,
     name: "date_plan",
     model: "analyst",
@@ -403,7 +403,7 @@ export async function* runFullDate(A: AgentInput, B: AgentInput, inv: Invitation
 
   yield { type: "status", message: "Both agents are writing private debriefs for their humans…" };
   const debrief = async (me: Speaker, other: Speaker): Promise<Debrief> => {
-    const user = `The date is over. Full transcript ("${plan.title}", ${inv.activity} at ${inv.venue}):\n\n${transcript(lines, a, b)}\n\nYour private notes during the date:\n${myThoughts(lines, me)}\n\nWrite your private debrief for ${me.input.firstName} about ${other.input.name}. Judge fit against ${me.input.firstName}'s needs and dealbreakers in the dossier. Be honest and calibrated — don't inflate.`;
+    const user = `The date is over. Full transcript ("${plan.title}", ${inv.activity} at ${inv.venue}):\n\n${transcript(lines, a, b)}\n\nYour private notes during the date:\n${myThoughts(lines, me)}\n\nWrite your private debrief for ${me.input.firstName} about ${other.input.name}. Judge fit need by need against ${me.input.firstName}'s needs and dealbreakers in the dossier: which needs did the date actually show being met, which stayed unknown, which clashed? Unknowns are not points in their favour. Being charming on a date is not the same as being right for ${me.input.firstName}. Be honest and calibrated — an agent that rates everyone 90 is useless to its human.`;
     const r = await structured({ system: me.system, user, schema: DebriefZ, name: "debrief", model: "agent", temperature: 0.5, maxTokens: 1800 });
     const d = r.dimensions;
     const dim = (x: { score: number; note: string }) => ({ score: clampInt(x.score, 1, 10), note: x.note });
