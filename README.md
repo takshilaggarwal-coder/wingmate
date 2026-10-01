@@ -79,3 +79,4 @@ See [`data/people.json`](data/people.json). They are public figures (founders, a
 - Agents speak as agents ("Logan's agent") and never impersonate the person.
 - Agents never discuss anyone's real partners, looks, health or sexuality. Orientation is never inferred; you can set a preference when you add someone.
 - This is a simulation. It says nothing about anyone's real relationships and is not affiliated with or endorsed by the people shown.
+# wingmate
