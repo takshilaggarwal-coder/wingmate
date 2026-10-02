@@ -3,6 +3,7 @@
 // Each provider has a pool of models; when one is rate-limited or out of daily quota we rotate to the
 // next model, then to the next provider (if more keys are set).
 import OpenAI from "openai";
+import { Agent } from "undici";
 import type {
   ChatCompletionContentPart,
   ChatCompletionCreateParamsNonStreaming,
@@ -85,10 +86,21 @@ export const PRESETS: Record<string, Preset> = {
   },
 };
 
+const TIMEOUT = Number(process.env.LLM_TIMEOUT_MS || 45_000);
+
+/** Each client gets its own connection pool with short keep-alive: long-running processes otherwise end up
+ *  reusing half-dead sockets to the provider and every request hangs until it times out. */
+function makeClient(apiKey: string, baseURL: string): OpenAI {
+  const dispatcher = new Agent({ keepAliveTimeout: 4_000, keepAliveMaxTimeout: 10_000, connect: { timeout: 10_000 }, headersTimeout: TIMEOUT, bodyTimeout: TIMEOUT });
+  return new OpenAI({ apiKey, baseURL, maxRetries: 0, timeout: TIMEOUT, fetchOptions: { dispatcher } as never });
+}
+
 interface Slot {
   provider: string;
   label: string;
   client: OpenAI;
+  apiKey: string;
+  baseURL: string;
   id: string;
   rpm: number;
   vision: boolean;
@@ -108,11 +120,13 @@ function buildSlots(): Slot[] {
   const primary = process.env.LLM_PROVIDER;
   if (primary && names.includes(primary)) names.sort((a, b) => (a === primary ? -1 : b === primary ? 1 : 0));
   const slots: Slot[] = [];
-  const add = (provider: string, label: string, client: OpenAI, m: ModelSpec) =>
+  const add = (provider: string, label: string, client: OpenAI, m: ModelSpec, apiKey: string, baseURL: string) =>
     slots.push({
       provider,
       label,
       client,
+      apiKey,
+      baseURL,
       id: m.id,
       rpm: m.rpm,
       vision: !!m.vision,
@@ -126,21 +140,21 @@ function buildSlots(): Slot[] {
     });
 
   if (process.env.LLM_BASE_URL && process.env.LLM_API_KEY) {
-    const client = new OpenAI({ apiKey: process.env.LLM_API_KEY, baseURL: process.env.LLM_BASE_URL, maxRetries: 0, timeout: Number(process.env.LLM_TIMEOUT_MS || 45_000) });
+    const client = makeClient(process.env.LLM_API_KEY, process.env.LLM_BASE_URL);
     for (const id of (process.env.LLM_MODELS || process.env.LLM_MODEL || "gpt-4o-mini").split(",").map((s) => s.trim()).filter(Boolean))
-      add("custom", "Custom endpoint", client, { id, rpm: Number(process.env.LLM_RPM || 30), vision: process.env.LLM_VISION === "1", jsonSchema: process.env.LLM_JSON_SCHEMA === "1" });
+      add("custom", "Custom endpoint", client, { id, rpm: Number(process.env.LLM_RPM || 30), vision: process.env.LLM_VISION === "1", jsonSchema: process.env.LLM_JSON_SCHEMA === "1" }, process.env.LLM_API_KEY, process.env.LLM_BASE_URL);
   }
   const firstKeyed = names.find((n) => process.env[PRESETS[n].keyEnv]);
   for (const name of names) {
     const p = PRESETS[name];
     const key = process.env[p.keyEnv];
     if (!key) continue;
-    const client = new OpenAI({ apiKey: key, baseURL: p.baseURL, maxRetries: 0, timeout: Number(process.env.LLM_TIMEOUT_MS || 45_000) });
+    const client = makeClient(key, p.baseURL);
     const override = name === firstKeyed ? process.env.LLM_MODELS : undefined;
     const models = override
       ? override.split(",").map((id) => p.models.find((m) => m.id === id.trim()) || { id: id.trim(), rpm: 10, vision: true })
       : p.models;
-    for (const m of models) add(name, p.label, client, m);
+    for (const m of models) add(name, p.label, client, m, key, p.baseURL);
   }
   return slots;
 }
@@ -238,6 +252,11 @@ async function run<T>(needVision: boolean, role: Role, fn: (s: Slot) => Promise<
         }
         if (status === undefined || status >= 500 || status === 408) {
           slot.coolUntil = Date.now() + 90_000; // timed out / overloaded: give it a rest
+          if (status === undefined) {
+            // fresh connection pool for this provider so a stuck socket can't poison later requests
+            const fresh = makeClient(slot.apiKey, slot.baseURL);
+            for (const x of slots()) if (x.provider === slot.provider) x.client = fresh;
+          }
           await sleep(1500);
           continue;
         }
