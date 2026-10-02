@@ -18,7 +18,8 @@ interface ModelSpec {
   vision?: boolean;
   jsonSchema?: boolean;
   noSystem?: boolean; // some models reject system instructions
-  role?: "analyst"; // reserved for the deeper reads (profiles), so their small daily quota isn't spent on chit-chat
+  role?: "analyst";
+  plainJson?: boolean; // ask for JSON in the prompt only (some models hang in JSON mode); replies are still validated // reserved for the deeper reads (profiles), so their small daily quota isn't spent on chit-chat
   reasoning?: "low" | "none"; // thinking models: keep thinking short so replies don't get cut off
 }
 
@@ -35,13 +36,13 @@ export const PRESETS: Record<string, Preset> = {
     baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
     keyEnv: "GEMINI_API_KEY",
     models: [
-      { id: "gemini-3.8-flash", rpm: 8, vision: true, jsonSchema: true, role: "analyst", reasoning: "low" },
-      { id: "gemini-3-flash-preview", rpm: 8, vision: true, jsonSchema: true, role: "analyst", reasoning: "low" },
-      { id: "gemini-3.5-flash-lite", rpm: 14, vision: true, jsonSchema: true },
-      { id: "gemma-4-26b-a4b-it", rpm: 4, vision: true, jsonSchema: true }, // Gemma's free tier is token-limited per minute
-      { id: "gemini-3.1-flash-lite", rpm: 14, vision: true, jsonSchema: true },
-      { id: "gemini-flash-lite-latest", rpm: 14, vision: true, jsonSchema: true },
-      { id: "gemini-3.1-flash-lite-preview", rpm: 10, vision: true, jsonSchema: true },
+      { id: "gemini-3.8-flash", rpm: 8, vision: true, plainJson: true, role: "analyst", reasoning: "low" },
+      { id: "gemini-3-flash-preview", rpm: 8, vision: true, plainJson: true, role: "analyst", reasoning: "low" },
+      { id: "gemini-3.5-flash-lite", rpm: 14, vision: true, plainJson: true },
+      { id: "gemma-4-26b-a4b-it", rpm: 4, vision: true, plainJson: true }, // Gemma's free tier is token-limited per minute
+      { id: "gemini-3.1-flash-lite", rpm: 14, vision: true, plainJson: true },
+      { id: "gemini-flash-lite-latest", rpm: 14, vision: true, plainJson: true },
+      { id: "gemini-3.1-flash-lite-preview", rpm: 10, vision: true, plainJson: true },
     ],
   },
   groq: {
@@ -86,7 +87,7 @@ export const PRESETS: Record<string, Preset> = {
   },
 };
 
-const TIMEOUT = Number(process.env.LLM_TIMEOUT_MS || 45_000);
+const TIMEOUT = Number(process.env.LLM_TIMEOUT_MS || 150_000); // patient: abandoned requests still burn free-tier quota
 
 /** Each client gets its own connection pool with short keep-alive: long-running processes otherwise end up
  *  reusing half-dead sockets to the provider and every request hangs until it times out. */
@@ -130,7 +131,7 @@ function buildSlots(): Slot[] {
       id: m.id,
       rpm: m.rpm,
       vision: !!m.vision,
-      jsonMode: m.jsonSchema ? "schema" : "object",
+      jsonMode: m.plainJson ? "none" : m.jsonSchema ? "schema" : "object",
       noSystem: !!m.noSystem,
       role: m.role,
       reasoning: m.reasoning,

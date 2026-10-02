@@ -34,32 +34,25 @@ function renderCard(c: PublicCard): string {
   return `${c.name} (${c.pronouns}) · ${c.location} — "${c.oneLiner}" · into: ${c.tags.join(", ")}`;
 }
 
-function traits(list: Analysis["needs"]): string {
-  return list.map((t) => `- ${t.label}: ${t.detail} (evidence: ${t.evidence})`).join("\n");
-}
-
+/** Compact brief the agent carries on dates (the full evidence lives on the profile page). Kept short on
+ *  purpose: free-tier APIs limit tokens per minute, and every agent message re-sends this brief. */
 export function renderDossier(p: AgentInput): string {
   const a = p.analysis;
+  const list = (xs: { label: string; detail: string }[]) => xs.map((t) => `- ${t.label}: ${t.detail}`).join("\n");
+  const labels = (xs: { label: string }[]) => xs.map((t) => t.label).join("; ");
   return [
-    `NAME: ${p.name} (${a.pronouns}) · ${a.location}`,
-    `ONE-LINER: ${a.oneLiner}`,
-    `SUMMARY: ${a.summary}`,
-    `NEEDS IN A PARTNER:\n${traits(a.needs)}`,
-    `HOBBIES:\n${traits(a.hobbies)}`,
-    `INTERESTS:\n${traits(a.interests)}`,
-    `VALUES:\n${traits(a.values)}`,
-    `PERSONALITY:\n${traits(a.personality.traits)}\n- communication: ${a.personality.communicationStyle}\n- humour: ${a.personality.humor}\n- social energy: ${a.personality.socialEnergy}`,
-    `LIFESTYLE: pace — ${a.lifestyle.pace}; schedule — ${a.lifestyle.schedule}; travel — ${a.lifestyle.travel}; fitness — ${a.lifestyle.fitness}; social — ${a.lifestyle.social}`,
-    `CAREER DRIVE: ${a.careerDrive}`,
-    `LOVE LANGUAGE (best guess): ${a.loveLanguage.primary} — ${a.loveLanguage.why}`,
+    `${p.name} (${a.pronouns}) · ${a.location} — ${a.oneLiner}`,
+    `WHO: ${a.summary}`,
+    `NEEDS IN A PARTNER:\n${list(a.needs)}`,
+    `HOBBIES: ${labels(a.hobbies)}. INTERESTS: ${labels(a.interests)}. VALUES: ${labels(a.values)}.`,
+    `PERSONALITY: ${labels(a.personality.traits)}; talks: ${a.personality.communicationStyle}; humour: ${a.personality.humor}; ${a.personality.socialEnergy}.`,
+    `LIFESTYLE: ${a.lifestyle.pace}; ${a.lifestyle.schedule}; travel: ${a.lifestyle.travel}; fitness: ${a.lifestyle.fitness}.`,
     `IDEAL PARTNER: ${a.idealPartner}`,
-    `GREEN FLAGS: ${a.greenFlags.join("; ")}`,
-    `LIKELY DEALBREAKERS: ${a.dealbreakers.join("; ")}`,
+    `DEALBREAKERS: ${a.dealbreakers.join("; ")}`,
     `TRUE THINGS YOU CAN SHARE: ${a.agentBrief.sellingPoints.join("; ")}`,
-    `YOUR AGENDA ON EVERY DATE: ${a.agentBrief.agenda.join("; ")}`,
-    `QUESTIONS YOU WANT TO ASK: ${a.agentBrief.mustAsk.join("; ")}`,
-    `UNKNOWN — DO NOT INVENT: ${a.confidence.gaps.join("; ")}`,
-  ].join("\n\n");
+    `YOUR AGENDA: ${a.agentBrief.agenda.join("; ")}`,
+    `UNKNOWN — DON'T INVENT: ${a.confidence.gaps.join("; ")}`,
+  ].join("\n");
 }
 
 function pronounOf(p: AgentInput): string {
